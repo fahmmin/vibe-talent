@@ -10,7 +10,9 @@ import { siteUrl } from "@/lib/seo";
 import { normalizeExternalUrl, normalizeRepoUrl } from "@/lib/url-normalize";
 import { BadgeDisplay } from "@/components/ui/badge-display";
 import type { UserWithSocials } from "@/lib/types/database";
+import type { Project } from "@/lib/types/database";
 import { StreakCounter } from "@/components/ui/streak-counter";
+import { ShippedTodayDialog } from "@/components/dashboard/shipped-today-dialog";
 import { ActivityHeatmap } from "@/components/ui/activity-heatmap";
 import { ProjectCard } from "@/components/ui/project-card";
 import { ProfileViewsWidget } from "@/components/dashboard/profile-views-widget";
@@ -47,6 +49,22 @@ const OnboardingTour = dynamic(
   () => import("@/components/onboarding/onboarding-tour").then((m) => m.OnboardingTour),
   { ssr: false }
 );
+
+function findMatchedProject(
+  pushEvents: Array<{ github_url: string | null }>,
+  projects: Project[]
+): Project | null {
+  const published = projects.filter((p) => p.github_url);
+  for (const event of pushEvents) {
+    if (!event.github_url) continue;
+    const normalizedEvent = normalizeRepoUrl(event.github_url);
+    const match = published.find(
+      (p) => normalizeRepoUrl(p.github_url!) === normalizedEvent
+    );
+    if (match) return match;
+  }
+  return null;
+}
 
 // Isolated 1Hz timer so it does not re-render the entire DashboardPage tree
 // (heatmap, project cards, milestone, etc.) every second. With this lifted
@@ -129,6 +147,8 @@ export default function DashboardPage() {
   // without changing how the production trigger is recorded.
   const [showTour, setShowTour] = useState(false);
   const [tourForceOpen, setTourForceOpen] = useState(false);
+  const [shippedProject, setShippedProject] = useState<Project | null>(null);
+  const [showShippedDialog, setShowShippedDialog] = useState(false);
 
   // One-shot tour trigger. Runs once on mount (empty deps), reads two signals:
   //   1. The `vibetalent_show_tour_after_redirect` sessionStorage key set by
@@ -324,6 +344,41 @@ export default function DashboardPage() {
         social_links: socials || null,
       });
       setLoading(false);
+
+      // Check if user pushed to a published project today → show celebration dialog.
+      // Keyed on user+date in sessionStorage so it only fires once per session day.
+      const nowLocal2 = new Date();
+      const todayKey = `${nowLocal2.getFullYear()}-${String(nowLocal2.getMonth() + 1).padStart(2, "0")}-${String(nowLocal2.getDate()).padStart(2, "0")}`;
+      const shippedKey = `shipped_dialog_shown_${authUser.id}_${todayKey}`;
+      if (
+        typeof window !== "undefined" &&
+        !sessionStorage.getItem(shippedKey) &&
+        profile?.github_username &&
+        projects && projects.length > 0
+      ) {
+        try {
+          const todayStart = `${todayKey}T00:00:00.000Z`;
+          const { data: todayPushes } = await sb
+            .from("feed_events")
+            .select("id, github_url")
+            .eq("user_id", authUser.id)
+            .eq("event_type", "push")
+            .gte("created_at", todayStart)
+            .limit(20);
+          if (todayPushes && todayPushes.length > 0) {
+            const matched = findMatchedProject(
+              todayPushes as Array<{ github_url: string | null }>,
+              projects as Project[]
+            );
+            if (matched) {
+              setShippedProject(matched);
+              setShowShippedDialog(true);
+            }
+          }
+        } catch {
+          // Non-critical — never block the dashboard over this
+        }
+      }
 
       // Recompute streak/score server-side so the profile page stays in sync.
       // Routed through the SECURITY DEFINER update_user_streak RPC rather than a
@@ -874,6 +929,15 @@ export default function DashboardPage() {
     reloadUser();
   }, [reloadUser]);
 
+  const handleCloseShippedDialog = useCallback(() => {
+    if (user && typeof window !== "undefined") {
+      const now = new Date();
+      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      sessionStorage.setItem(`shipped_dialog_shown_${user.id}_${todayKey}`, "1");
+    }
+    setShowShippedDialog(false);
+  }, [user]);
+
   const handleLogActivity = async () => {
     if (!user || todayLogged || logging) return;
     setLogging(true);
@@ -1174,6 +1238,15 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 py-12">
+      {/* Shipped-today celebration dialog */}
+      {showShippedDialog && shippedProject && user && (
+        <ShippedTodayDialog
+          project={shippedProject}
+          username={user.username}
+          onClose={handleCloseShippedDialog}
+        />
+      )}
+
       <h1 className="text-3xl font-extrabold uppercase text-[var(--foreground)] mb-6">Dashboard</h1>
 
       {/* Tabs */}
