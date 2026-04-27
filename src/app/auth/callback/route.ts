@@ -93,9 +93,25 @@ export async function GET(request: Request) {
 
         const { data: profile } = await adminSb
           .from("users")
-          .select("username, avatar_url, github_username, github_id")
+          .select("username, avatar_url, github_username, github_id, display_name, bio")
           .eq("id", user.id)
           .single();
+
+        // Detect Twitter identity for auto-fill
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const twitterIdentity = user.identities?.find((i: any) => i.provider === "twitter");
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const twitterData = (twitterIdentity?.identity_data ?? {}) as any;
+        const twitterHandle = twitterData.user_name || twitterData.preferred_username || null;
+        const twitterName = twitterData.full_name || twitterData.name || null;
+        const twitterBio = twitterData.description || null;
+
+        // Detect LinkedIn OIDC identity for auto-fill
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const linkedinIdentity = user.identities?.find((i: any) => i.provider === "linkedin_oidc");
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const linkedinData = (linkedinIdentity?.identity_data ?? {}) as any;
+        const linkedinName = linkedinData.full_name || linkedinData.name || null;
 
         // UPDATE-only: we can't INSERT here because users.username is NOT NULL
         // and we don't have one yet. Brand-new GitHub OAuth signups land on
@@ -103,6 +119,7 @@ export async function GET(request: Request) {
         // row with github_username already set (from user.identities). This
         // branch only fires for returning users whose row already exists —
         // e.g. avatar refresh or Google→GitHub linkIdentity recovery.
+        const autoFills: string[] = [];
         if (profile) {
           const updates: Record<string, string | number> = {};
 
@@ -122,12 +139,21 @@ export async function GET(request: Request) {
             updates.github_id = githubId;
           }
 
-          // NOTE: display_name is intentionally NOT touched here. Profile-setup
-          // step 1 already pre-fills it from user_metadata.full_name for new
-          // users, so first-time signups still get a nice default to accept
-          // or edit. Leaving the callback out of display_name means users who
-          // intentionally clear the field in settings won't have it restored
-          // on their next OAuth login.
+          // Auto-fill display_name and bio from Twitter/X if currently empty.
+          // Only fills on explicit linkIdentity (redirect to /settings), so
+          // users who intentionally cleared their name won't have it restored
+          // on regular logins.
+          if (!profile.display_name) {
+            const socialName = twitterName || linkedinName;
+            if (socialName) {
+              updates.display_name = socialName;
+              autoFills.push("display name");
+            }
+          }
+          if (!profile.bio && twitterBio) {
+            updates.bio = twitterBio;
+            autoFills.push("bio");
+          }
 
           if (Object.keys(updates).length > 0) {
             await adminSb
@@ -137,14 +163,38 @@ export async function GET(request: Request) {
           }
         }
 
-        // Auto-populate the public social link to the verified GitHub handle
-        // so profiles display GitHub without requiring manual entry.
-        if (githubUsername) {
+        // Auto-populate verified social links:
+        // - GitHub handle (existing behaviour)
+        // - Twitter handle when linking X account
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const socialLinkUpdates: Record<string, string> = {};
+        if (githubUsername) socialLinkUpdates.github = githubUsername;
+        if (twitterHandle) socialLinkUpdates.twitter = twitterHandle;
+        if (Object.keys(socialLinkUpdates).length > 0) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           await (adminSb.from("social_links") as any).upsert(
-            { user_id: user.id, github: githubUsername },
+            { user_id: user.id, ...socialLinkUpdates },
             { onConflict: "user_id" }
           );
+        }
+
+        // If fields were auto-filled and the user is heading back to /settings,
+        // append ?autofilled= so the page can show the confirmation banner.
+        if (autoFills.length > 0 && next.startsWith("/settings")) {
+          const param = encodeURIComponent(autoFills.join(","));
+          const separator = next.includes("?") ? "&" : "?";
+          const autofillUrl = `${origin}${next}${separator}autofilled=${param}`;
+          const autofillResponse = NextResponse.redirect(autofillUrl);
+          forwardedResponse.cookies.getAll().forEach((c) => {
+            autofillResponse.cookies.set(c);
+          });
+          // Skip the generic return below and return early with the richer URL
+          if (!profile?.username) {
+            // new user — still send to profile-setup (shouldn't normally happen
+            // on a linkIdentity flow, but guard anyway)
+          } else {
+            return autofillResponse;
+          }
         }
 
         // Send first-time users (email confirm or OAuth) to profile setup

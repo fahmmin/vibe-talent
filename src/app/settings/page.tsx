@@ -17,6 +17,9 @@ import {
   Users,
   Github,
   CheckCircle2,
+  Twitter,
+  Linkedin,
+  Sparkles,
 } from "lucide-react";
 
 // Drives the "@" decoration inside the handle inputs: show it for empty
@@ -47,6 +50,10 @@ export default function SettingsPage() {
     ide: "",
   });
   const [connectingGithub, setConnectingGithub] = useState(false);
+  const [connectingX, setConnectingX] = useState(false);
+  const [connectingLinkedIn, setConnectingLinkedIn] = useState(false);
+  const [linkedIdentities, setLinkedIdentities] = useState<string[]>([]);
+  const [autoFilledFields, setAutoFilledFields] = useState<string[]>([]);
   const [highlightName, setHighlightName] = useState(false);
   const displayNameRef = useRef<HTMLInputElement>(null);
 
@@ -60,6 +67,9 @@ export default function SettingsPage() {
       const supabase = createClient();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sb = supabase as any;
+
+      // Track which OAuth providers the user has linked
+      setLinkedIdentities(authUser.identities?.map((i) => i.provider) ?? []);
 
       try {
         const results = await Promise.allSettled([
@@ -156,6 +166,7 @@ export default function SettingsPage() {
 
   // When arriving via ?complete=name (e.g. from the navbar onboarding dot),
   // scroll to the display name field and pulse it until the user starts typing.
+  // Also handle ?autofilled= param set by /auth/callback after social OAuth.
   useEffect(() => {
     if (!user) return;
     if (searchParams.get("complete") === "name" && !user.display_name) {
@@ -165,6 +176,10 @@ export default function SettingsPage() {
         displayNameRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
         displayNameRef.current?.focus();
       }, 120);
+    }
+    const filled = searchParams.get("autofilled");
+    if (filled) {
+      setAutoFilledFields(filled.split(",").filter(Boolean));
     }
   }, [user, searchParams]);
 
@@ -343,6 +358,32 @@ export default function SettingsPage() {
     // On success the browser redirects to GitHub, so no further UI update needed.
   };
 
+  const handleConnectX = async () => {
+    setConnectingX(true);
+    const supabase = createClient();
+    const { error } = await supabase.auth.linkIdentity({
+      provider: "twitter",
+      options: { redirectTo: `${window.location.origin}/auth/callback?next=/settings` },
+    });
+    if (error) {
+      alert(`Couldn't connect X: ${error.message}`);
+      setConnectingX(false);
+    }
+  };
+
+  const handleConnectLinkedIn = async () => {
+    setConnectingLinkedIn(true);
+    const supabase = createClient();
+    const { error } = await supabase.auth.linkIdentity({
+      provider: "linkedin_oidc",
+      options: { redirectTo: `${window.location.origin}/auth/callback?next=/settings` },
+    });
+    if (error) {
+      alert(`Couldn't connect LinkedIn: ${error.message}`);
+      setConnectingLinkedIn(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="mx-auto max-w-3xl px-4 sm:px-6 py-12">
@@ -366,6 +407,34 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 sm:px-6 py-12">
       <h1 className="text-3xl font-extrabold uppercase text-[var(--foreground)] mb-8">Settings</h1>
+
+      {/* Auto-fill banner: shown after connecting X or LinkedIn */}
+      {autoFilledFields.length > 0 && (
+        <div
+          className="mb-6 p-4 flex items-start gap-3"
+          style={{
+            backgroundColor: "var(--status-success-bg)",
+            border: "2px solid var(--border-hard)",
+            boxShadow: "var(--shadow-brutal)",
+          }}
+        >
+          <Sparkles size={18} className="mt-0.5 shrink-0" style={{ color: "var(--status-success-text)" }} />
+          <div>
+            <p className="font-extrabold uppercase text-sm text-[var(--status-success-text)]">Profile auto-filled</p>
+            <p className="text-sm font-medium text-[var(--foreground)] mt-0.5">
+              We pulled your{" "}
+              {autoFilledFields.map((f) => f.replace("_", " ")).join(", ")}{" "}
+              from your connected account — feel free to edit below.
+            </p>
+          </div>
+          <button
+            onClick={() => setAutoFilledFields([])}
+            className="ml-auto text-xs font-bold text-[var(--text-muted)] hover:text-[var(--foreground)] uppercase shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Edit Profile */}
       <div
@@ -477,6 +546,26 @@ export default function SettingsPage() {
                   style={{ paddingLeft: looksLikeBareHandle(profileForm.twitter) ? "1.75rem" : undefined }}
                 />
               </div>
+              {!linkedIdentities.includes("twitter") && (
+                <button
+                  type="button"
+                  onClick={handleConnectX}
+                  disabled={connectingX}
+                  className="mt-2 w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-extrabold uppercase tracking-wide text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{
+                    backgroundColor: "#0F0F0F",
+                    border: "2px solid var(--border-hard)",
+                  }}
+                >
+                  <Twitter size={13} />
+                  {connectingX ? "Connecting..." : "Verify via X & Auto-fill"}
+                </button>
+              )}
+              {linkedIdentities.includes("twitter") && (
+                <p className="mt-1.5 text-xs font-bold text-[var(--status-success-text)] flex items-center gap-1">
+                  <CheckCircle2 size={12} /> X account connected
+                </p>
+              )}
             </div>
             <div>
               <label className="text-xs font-bold uppercase tracking-wide text-[var(--text-muted)] mb-1.5 block">GitHub</label>
@@ -566,6 +655,39 @@ export default function SettingsPage() {
                 placeholder="https://..."
                 className="input-brutal"
               />
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs font-bold uppercase tracking-wide text-[var(--text-muted)] mb-1.5 block">LinkedIn</label>
+              {linkedIdentities.includes("linkedin_oidc") ? (
+                <div
+                  className="flex items-center gap-2 px-3 py-2.5 text-sm"
+                  style={{
+                    backgroundColor: "var(--status-success-bg)",
+                    border: "2px solid var(--border-hard)",
+                  }}
+                >
+                  <CheckCircle2 size={16} className="text-[var(--status-success-text)] flex-shrink-0" />
+                  <span className="font-bold text-[var(--status-success-text)]">LinkedIn connected</span>
+                  <span className="text-xs font-bold uppercase text-[var(--status-success-text)] opacity-70 ml-auto">Auto-fills name & avatar</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleConnectLinkedIn}
+                  disabled={connectingLinkedIn}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{
+                    backgroundColor: "#0A66C2",
+                    border: "2px solid var(--border-hard)",
+                  }}
+                >
+                  <Linkedin size={16} />
+                  {connectingLinkedIn ? "Connecting..." : "Connect LinkedIn & Auto-fill Name"}
+                </button>
+              )}
+              <p className="mt-1.5 text-xs font-medium text-[var(--text-muted)]">
+                Connects via OAuth to auto-fill your display name and avatar.
+              </p>
             </div>
           </div>
           <div>
