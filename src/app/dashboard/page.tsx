@@ -394,6 +394,16 @@ export default function DashboardPage() {
           fetch("/api/github/activity", { method: "POST" })
             .then(res => res.json())
             .then(data => {
+              // Merge fresh push events into the overlay map immediately —
+              // feed_events is only updated by the 6h cron, so without this
+              // a commit made minutes ago wouldn't appear until the next cron tick.
+              if (data.push_events?.length > 0 && projects?.length > 0) {
+                const fresh = buildProjectEventMap(
+                  data.push_events as Array<{ github_url: string | null; created_at: string }>,
+                  projects as Project[]
+                );
+                setProjectEventMap(prev => ({ ...prev, ...fresh }));
+              }
               if (data.synced && data.dates_logged > 0) {
                 // Re-fetch streak data and update UI after successful sync
                 fetchStreakLogs(authUser.id).then(newStreakData => {

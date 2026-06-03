@@ -119,11 +119,28 @@ export async function POST(req: NextRequest) {
       if (!error) loggedCount++;
     }
 
+    // Extract push events so the dashboard overlay can show project commits
+    // without waiting for the 6-hour cron to write them to feed_events.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pushEvents = recentEvents
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((e: any) => e.type === "PushEvent")
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((e: any) => {
+        const sha = e.payload?.commits?.[0]?.sha || "";
+        return {
+          github_url: sha ? `https://github.com/${e.repo?.name}/commit/${sha}` : "",
+          created_at: e.created_at as string,
+        };
+      })
+      .filter((e: { github_url: string }) => e.github_url !== "");
+
     return NextResponse.json({
       synced: true,
       events_found: recentEvents.length,
       dates_logged: loggedCount,
       activity_dates: activityDates,
+      push_events: pushEvents,
       message: `Found ${recentEvents.length} GitHub events. Logged activity for ${loggedCount} day(s).`,
     });
   } catch (error) {
