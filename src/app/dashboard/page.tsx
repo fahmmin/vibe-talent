@@ -51,7 +51,7 @@ const OnboardingTour = dynamic(
 );
 
 function buildProjectEventMap(
-  pushEvents: Array<{ github_url: string | null; created_at: string }>,
+  pushEvents: Array<{ github_url: string | null; created_at: string; commit_count?: number }>,
   projects: Project[]
 ): Record<string, { count: number; projectName: string }> {
   const map: Record<string, { count: number; projectName: string }> = {};
@@ -67,7 +67,7 @@ function buildProjectEventMap(
     if (!map[dateKey]) {
       map[dateKey] = { count: 0, projectName: matched.title };
     }
-    map[dateKey].count++;
+    map[dateKey].count += event.commit_count ?? 1;
   }
   return map;
 }

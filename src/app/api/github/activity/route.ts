@@ -131,6 +131,7 @@ export async function POST(req: NextRequest) {
         return {
           github_url: sha ? `https://github.com/${e.repo?.name}/commit/${sha}` : "",
           created_at: e.created_at as string,
+          commit_count: (e.payload?.size as number) || 1,
         };
       })
       .filter((e: { github_url: string }) => e.github_url !== "");
