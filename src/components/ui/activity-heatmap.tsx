@@ -6,6 +6,8 @@ import { countToLevel } from "@/lib/heatmap-utils";
 interface ActivityHeatmapProps {
   data: Record<string, number>;
   totalOverride?: number;
+  projectEvents?: Record<string, { count: number; projectName: string }>;
+  showProjectOverlay?: boolean;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -16,7 +18,7 @@ function dayLabel(count: number, date: string): string {
   return `${count} ${count === 1 ? "contribution" : "contributions"} on ${date}`;
 }
 
-export function ActivityHeatmap({ data, totalOverride }: ActivityHeatmapProps) {
+export function ActivityHeatmap({ data, totalOverride, projectEvents, showProjectOverlay }: ActivityHeatmapProps) {
   const { weeks, monthLabels } = useMemo(() => {
     const result: { date: string; count: number; dayOfWeek: number }[][] = [];
     const today = new Date();
@@ -144,18 +146,52 @@ export function ActivityHeatmap({ data, totalOverride }: ActivityHeatmapProps) {
               <div key={wi} className="flex flex-col gap-[3px]">
                 {week.map((day) => {
                   const label = dayLabel(day.count, day.date);
+                  const proj = showProjectOverlay ? projectEvents?.[day.date] : undefined;
                   return (
-                    <div
-                      key={day.date}
-                      className="w-3 h-3"
-                      style={{
-                        backgroundColor: getLevelColor(countToLevel(day.count)),
-                        border: "1px solid var(--border-subtle)",
-                      }}
-                      title={label}
-                      aria-label={label}
-                      role="img"
-                    />
+                    <div key={day.date} className="relative w-3 h-3">
+                      <div
+                        className="w-3 h-3"
+                        style={{
+                          backgroundColor: getLevelColor(countToLevel(day.count)),
+                          border: "1px solid var(--border-subtle)",
+                        }}
+                        title={label}
+                        aria-label={label}
+                        role="img"
+                      />
+                      {proj && (
+                        <div
+                          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-0.5 z-20 pointer-events-none whitespace-nowrap"
+                          style={{
+                            background: "var(--bg-surface)",
+                            border: "1px solid var(--border-subtle)",
+                            borderRadius: 6,
+                            padding: "2px 6px",
+                            fontSize: "9px",
+                            fontWeight: 600,
+                            color: "var(--text-secondary)",
+                            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                            letterSpacing: "0.01em",
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          {proj.count} commit{proj.count !== 1 ? "s" : ""} on {proj.projectName}
+                          <div
+                            style={{
+                              position: "absolute",
+                              top: "100%",
+                              left: "50%",
+                              transform: "translateX(-50%)",
+                              width: 0,
+                              height: 0,
+                              borderLeft: "3px solid transparent",
+                              borderRight: "3px solid transparent",
+                              borderTop: "3px solid var(--border-subtle)",
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>

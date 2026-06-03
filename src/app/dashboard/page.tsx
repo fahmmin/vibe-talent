@@ -12,7 +12,6 @@ import { BadgeDisplay } from "@/components/ui/badge-display";
 import type { UserWithSocials } from "@/lib/types/database";
 import type { Project } from "@/lib/types/database";
 import { StreakCounter } from "@/components/ui/streak-counter";
-import { ShippedTodayDialog } from "@/components/dashboard/shipped-today-dialog";
 import { ActivityHeatmap } from "@/components/ui/activity-heatmap";
 import { ProjectCard } from "@/components/ui/project-card";
 import { ProfileViewsWidget } from "@/components/dashboard/profile-views-widget";
@@ -41,6 +40,7 @@ import {
   Trash2,
   ShieldCheck,
   Zap,
+  Eye,
 } from "lucide-react";
 
 // Lazy: only loaded when the tour is actually armed (post-signup or ?tour=force).
@@ -50,20 +50,26 @@ const OnboardingTour = dynamic(
   { ssr: false }
 );
 
-function findMatchedProject(
-  pushEvents: Array<{ github_url: string | null }>,
+function buildProjectEventMap(
+  pushEvents: Array<{ github_url: string | null; created_at: string }>,
   projects: Project[]
-): Project | null {
-  const published = projects.filter((p) => p.github_url);
+): Record<string, { count: number; projectName: string }> {
+  const map: Record<string, { count: number; projectName: string }> = {};
+  const published = projects.filter((p) => p.github_url && p.title);
   for (const event of pushEvents) {
     if (!event.github_url) continue;
     const normalizedEvent = normalizeRepoUrl(event.github_url);
-    const match = published.find(
+    const matched = published.find(
       (p) => normalizeRepoUrl(p.github_url!) === normalizedEvent
     );
-    if (match) return match;
+    if (!matched) continue;
+    const dateKey = event.created_at.split("T")[0];
+    if (!map[dateKey]) {
+      map[dateKey] = { count: 0, projectName: matched.title };
+    }
+    map[dateKey].count++;
   }
-  return null;
+  return map;
 }
 
 // Isolated 1Hz timer so it does not re-render the entire DashboardPage tree
@@ -147,8 +153,8 @@ export default function DashboardPage() {
   // without changing how the production trigger is recorded.
   const [showTour, setShowTour] = useState(false);
   const [tourForceOpen, setTourForceOpen] = useState(false);
-  const [shippedProject, setShippedProject] = useState<Project | null>(null);
-  const [showShippedDialog, setShowShippedDialog] = useState(false);
+  const [showProjectOverlay, setShowProjectOverlay] = useState(false);
+  const [projectEventMap, setProjectEventMap] = useState<Record<string, { count: number; projectName: string }>>({});
 
   // One-shot tour trigger. Runs once on mount (empty deps), reads two signals:
   //   1. The `vibetalent_show_tour_after_redirect` sessionStorage key set by
@@ -345,39 +351,28 @@ export default function DashboardPage() {
       });
       setLoading(false);
 
-      // Check if user pushed to a published project today → show celebration dialog.
-      // Keyed on user+date in sessionStorage so it only fires once per session day.
-      const nowLocal2 = new Date();
-      const todayKey = `${nowLocal2.getFullYear()}-${String(nowLocal2.getMonth() + 1).padStart(2, "0")}-${String(nowLocal2.getDate()).padStart(2, "0")}`;
-      const shippedKey = `shipped_dialog_shown_${authUser.id}_${todayKey}`;
-      if (
-        typeof window !== "undefined" &&
-        !sessionStorage.getItem(shippedKey) &&
-        profile?.github_username &&
-        projects && projects.length > 0
-      ) {
-        try {
-          const todayStart = `${todayKey}T00:00:00.000Z`;
-          const { data: todayPushes } = await sb
-            .from("feed_events")
-            .select("id, github_url")
-            .eq("user_id", authUser.id)
-            .eq("event_type", "push")
-            .gte("created_at", todayStart)
-            .limit(20);
-          if (todayPushes && todayPushes.length > 0) {
-            const matched = findMatchedProject(
-              todayPushes as Array<{ github_url: string | null }>,
-              projects as Project[]
-            );
-            if (matched) {
-              setShippedProject(matched);
-              setShowShippedDialog(true);
+      // Fetch push events for the past year to power the activity overlay.
+      // Fire-and-forget: non-critical for initial render.
+      if (profile?.github_username && projects && projects.length > 0) {
+        const yearAgo = new Date();
+        yearAgo.setDate(yearAgo.getDate() - 364);
+        sb.from("feed_events")
+          .select("github_url, created_at")
+          .eq("user_id", authUser.id)
+          .eq("event_type", "push")
+          .gte("created_at", yearAgo.toISOString())
+          .limit(2000)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .then(({ data: yearPushes }: { data: any[] | null }) => {
+            if (yearPushes) {
+              setProjectEventMap(
+                buildProjectEventMap(
+                  yearPushes as Array<{ github_url: string | null; created_at: string }>,
+                  projects as Project[]
+                )
+              );
             }
-          }
-        } catch {
-          // Non-critical — never block the dashboard over this
-        }
+          });
       }
 
       // Recompute streak/score server-side so the profile page stays in sync.
@@ -929,15 +924,6 @@ export default function DashboardPage() {
     reloadUser();
   }, [reloadUser]);
 
-  const handleCloseShippedDialog = useCallback(() => {
-    if (user && typeof window !== "undefined") {
-      const now = new Date();
-      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-      sessionStorage.setItem(`shipped_dialog_shown_${user.id}_${todayKey}`, "1");
-    }
-    setShowShippedDialog(false);
-  }, [user]);
-
   const handleLogActivity = async () => {
     if (!user || todayLogged || logging) return;
     setLogging(true);
@@ -1238,15 +1224,6 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 py-12">
-      {/* Shipped-today celebration dialog */}
-      {showShippedDialog && shippedProject && user && (
-        <ShippedTodayDialog
-          project={shippedProject}
-          username={user.username}
-          onClose={handleCloseShippedDialog}
-        />
-      )}
-
       <h1 className="text-3xl font-extrabold uppercase text-[var(--foreground)] mb-6">Dashboard</h1>
 
       {/* Tabs */}
@@ -1410,8 +1387,22 @@ export default function DashboardPage() {
           boxShadow: "var(--shadow-brutal)",
         }}
       >
-        <h2 className="text-lg font-extrabold uppercase text-[var(--foreground)] mb-4">Your Activity</h2>
-        <ActivityHeatmap data={heatmapData} totalOverride={ghTotal > 0 ? ghTotal : undefined} />
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-extrabold uppercase text-[var(--foreground)]">Your Activity</h2>
+          <button
+            onClick={() => setShowProjectOverlay((v) => !v)}
+            title={showProjectOverlay ? "Hide project commits" : "Show project commits"}
+            className={`p-1 rounded transition-colors ${showProjectOverlay ? "text-[var(--accent)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}
+          >
+            <Eye size={16} />
+          </button>
+        </div>
+        <ActivityHeatmap
+          data={heatmapData}
+          totalOverride={ghTotal > 0 ? ghTotal : undefined}
+          projectEvents={projectEventMap}
+          showProjectOverlay={showProjectOverlay}
+        />
       </div>
 
       {/* Your Projects */}
